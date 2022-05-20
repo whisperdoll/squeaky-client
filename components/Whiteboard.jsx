@@ -6,7 +6,17 @@ import useWindowSize from '../hooks/useWindowSize';
 import Canvas from './Canvas';
 import styles from './Whiteboard.module.scss';
 
-export default function Whiteboard({ path, size }) {
+function rectContainsPt(rect, pt) {
+  const right = rect.x + rect.w;
+  const bottom = rect.y + rect.h;
+
+  return (
+    pt.x >= rect.x && pt.x <= right &&
+    pt.y >= rect.y && pt.y <= bottom
+  );
+}
+
+export default function Whiteboard({ path, size, tool='select' }) {
   const canvasEl = useRef(null);
   const data = useRef([]);
   const api = useApi();
@@ -15,6 +25,10 @@ export default function Whiteboard({ path, size }) {
   const lastScrollDirections = useRef([]);
 
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+
+  const selectedIndexes = useRef([]);
+  const moveAction = useRef('select'); // 'select' or 'move'
+  const selectRect = useRef({ x: 0, y: 0, w: 0, h: 0 });
 
   useEffect(() => {
     api.get(`/note${normalizedPath}`)
@@ -113,6 +127,29 @@ export default function Whiteboard({ path, size }) {
         return false;
       }
 
+      // select and move
+      if (tool === 'select') {
+        if (moveAction.current === 'select') {
+          selectRect.current = {
+            x: Math.min(originalPos.x, pos.x) - offset.current.x,
+            y: Math.min(originalPos.y, pos.y) - offset.current.y,
+            w: Math.abs(originalPos.x - pos.x),
+            h: Math.abs(originalPos.y - pos.y)
+          };
+        } else {
+          selectedIndexes.current.forEach((i) => {
+            data.current[i].points.forEach((pt) => {
+              pt.x += (pos.x - lastPos.x),
+              pt.y += (pos.y - lastPos.y)
+            });
+          });
+
+          selectRect.current.x += (pos.x - lastPos.x);
+          selectRect.current.y += (pos.y - lastPos.y);
+        }
+        return false;
+      }
+
       const distance = Math.sqrt((adjustedPos.x - lastRecorded.current.x)**2 + (adjustedPos.y - lastRecorded.current.y)**2);
 
       // normal recording
@@ -185,6 +222,58 @@ export default function Whiteboard({ path, size }) {
         return false;
       }
 
+      // select and move
+      if (tool === 'select') {
+        if (moveAction.current === 'select') {
+          selectRect.current = {
+            x: Math.min(originalPos.x, pos.x) - offset.current.x,
+            y: Math.min(originalPos.y, pos.y) - offset.current.y,
+            w: Math.abs(originalPos.x - pos.x),
+            h: Math.abs(originalPos.y - pos.y)
+          };
+          moveAction.current = 'move';
+
+          let leftMost, rightMost, topMost, bottomMost;
+
+          selectedIndexes.current = data.current.map((stroke, i) => {
+            if (stroke.points.filter(pt => rectContainsPt(selectRect.current, pt)).length > stroke.points.length / 2) {
+              stroke.points.forEach((pt) => {
+                if (leftMost === undefined || pt.x - stroke.size * 4 < leftMost) {
+                  leftMost = pt.x - stroke.size * 4;
+                }
+                if (rightMost === undefined || pt.x + stroke.size * 4 > rightMost) {
+                  rightMost = pt.x + stroke.size * 4;
+                }
+                if (topMost === undefined || pt.y - stroke.size * 4 < topMost) {
+                  topMost = pt.y - stroke.size * 4;
+                }
+                if (bottomMost === undefined || pt.y + stroke.size * 4 > bottomMost) {
+                  bottomMost = pt.y + stroke.size * 4;
+                }
+              });
+
+              return i;
+            } else {
+              return null;
+            }
+          }).filter(i => i !== null);
+
+          if (selectedIndexes.current.length === 0) {
+            selectRect.current = null;
+          } else if (leftMost && rightMost && topMost && bottomMost) {
+            selectRect.current = {
+              x: leftMost,
+              y: topMost,
+              w: rightMost - leftMost,
+              h: bottomMost - topMost
+            };
+          }
+        } else {
+          // api call
+        }
+        return false;
+      }
+
       data.current.at(-1).points.push(adjustedPos);
       api.post('/note/draw', { path, data: data.current.at(-1) });
     },
@@ -201,6 +290,17 @@ export default function Whiteboard({ path, size }) {
       isErasing.current = e.button === 2 || e.button === 5;
 
       if (e.button === 2  || e.button === 5) return false;
+
+      // select and move
+      if (tool === 'select') {
+        if (selectRect.current && rectContainsPt(selectRect.current, adjustedPos)) {
+          moveAction.current = 'move';
+        } else {
+          moveAction.current = 'select';
+        }
+
+        return false;
+      }
 
       data.current.push({
         action: e.button === 2 ? 'erase' : 'draw',
@@ -226,12 +326,28 @@ export default function Whiteboard({ path, size }) {
 
     context.clearRect(0, 0, canvasEl.current.width, canvasEl.current.height);
 
-    data.current.forEach((datum) => {
-      context.fillStyle = datum.color;
-      context.strokeStyle = datum.color;
-      context.lineWidth = datum.size;
+    data.current.forEach((stroke, strokeIndex) => {
+      if (selectedIndexes.current.includes(strokeIndex)) {
+        context.fillStyle = '#773';
+        context.strokeStyle = '#773';
+        context.lineWidth = stroke.size * 2;
+
+        context.beginPath();
+  
+        context.moveTo(...xyFor(stroke.points[0]));
+  
+        for (let i = 1; i < stroke.points.length; i++) {
+          context.lineTo(...xyFor(stroke.points[i]));
+        }
+  
+        context.stroke();
+      }
+
+      context.fillStyle = stroke.color;
+      context.strokeStyle = stroke.color;
+      context.lineWidth = stroke.size;
       
-      if (datum.action === 'erase') {
+      if (stroke.action === 'erase') {
         context.globalCompositeOperation = 'destination-out';
       } else {
         context.globalCompositeOperation = 'source-over';
@@ -239,14 +355,33 @@ export default function Whiteboard({ path, size }) {
 
       context.beginPath();
 
-      context.moveTo(...xyFor(datum.points[0]));
+      context.moveTo(...xyFor(stroke.points[0]));
 
-      for (let i = 1; i < datum.points.length; i++) {
-        context.lineTo(...xyFor(datum.points[i]));
+      for (let i = 1; i < stroke.points.length; i++) {
+        context.lineTo(...xyFor(stroke.points[i]));
       }
 
       context.stroke();
     });
+
+    if (tool === 'select' && selectRect.current) {
+      if (rectContainsPt(selectRect.current, mousePosition.current)) {
+        canvasEl.current.style.cursor = 'move';
+      } else {
+        canvasEl.current.style.cursor = '';
+      }
+
+      context.globalCompositeOperation = 'source-over';
+      context.fillStyle = 'white';
+      context.strokeStyle = 'white';
+      context.lineWidth = 1;
+
+      context.beginPath();
+      context.rect(...xyFor(selectRect.current), selectRect.current.w, selectRect.current.h);
+      context.stroke();
+    } else if (tool === 'select' && !selectRect.current) {
+      canvasEl.current.style.cursor = '';
+    }
   }, []);
 
   useAnimationFrame(handleCanvasLogic);
