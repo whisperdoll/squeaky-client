@@ -13,6 +13,7 @@ export default function useAnimationFrame(callback) {
   }, [callback]);
 
   useEffect(() => {
+    unmounting.current = false;
     callback();
     animationFrameHandle.current = requestAnimationFrame(fn);
 
@@ -23,5 +24,5 @@ export default function useAnimationFrame(callback) {
         cancelAnimationFrame(animationFrameHandle.current);
       }
     };
-  }, []);
+  }, [callback]);
 }

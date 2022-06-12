@@ -16,7 +16,7 @@ function rectContainsPt(rect, pt) {
   );
 }
 
-export default function Whiteboard({ path, size, tool='select' }) {
+export default function Whiteboard({ path, size, tool }) {
   const canvasEl = useRef(null);
   const data = useRef([]);
   const api = useApi();
@@ -26,9 +26,12 @@ export default function Whiteboard({ path, size, tool='select' }) {
 
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
 
+  console.log(normalizedPath);
+
   const selectedIndexes = useRef([]);
   const moveAction = useRef('select'); // 'select' or 'move'
   const selectRect = useRef({ x: 0, y: 0, w: 0, h: 0 });
+  const originalMovePt = useRef({ x: 0, y: 0 });
 
   useEffect(() => {
     api.get(`/note${normalizedPath}`)
@@ -129,6 +132,10 @@ export default function Whiteboard({ path, size, tool='select' }) {
 
       // select and move
       if (tool === 'select') {
+        if (e.button !== -1) {
+          return false;
+        }
+
         if (moveAction.current === 'select') {
           selectRect.current = {
             x: Math.min(originalPos.x, pos.x) - offset.current.x,
@@ -269,7 +276,14 @@ export default function Whiteboard({ path, size, tool='select' }) {
             };
           }
         } else {
-          // api call
+          api.post('/note/move', {
+            path,
+            toMove: selectedIndexes.current,
+            offset: {
+              x: adjustedPos.x - originalMovePt.current.x,
+              y: adjustedPos.y - originalMovePt.current.y
+            }
+          });
         }
         return false;
       }
@@ -295,6 +309,7 @@ export default function Whiteboard({ path, size, tool='select' }) {
       if (tool === 'select') {
         if (selectRect.current && rectContainsPt(selectRect.current, adjustedPos)) {
           moveAction.current = 'move';
+          originalMovePt.current = adjustedPos;
         } else {
           moveAction.current = 'select';
         }
@@ -382,7 +397,7 @@ export default function Whiteboard({ path, size, tool='select' }) {
     } else if (tool === 'select' && !selectRect.current) {
       canvasEl.current.style.cursor = '';
     }
-  }, []);
+  }, [tool]);
 
   useAnimationFrame(handleCanvasLogic);
 
